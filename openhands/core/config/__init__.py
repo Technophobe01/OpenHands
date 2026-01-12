@@ -9,6 +9,7 @@ from openhands.core.config.config_utils import (
     get_field_info,
 )
 from openhands.core.config.extended_config import ExtendedConfig
+from openhands.core.config.extension_config import ExtensionConfig
 from openhands.core.config.llm_config import LLMConfig
 from openhands.core.config.mcp_config import MCPConfig
 from openhands.core.config.model_routing_config import ModelRoutingConfig
@@ -37,6 +38,7 @@ __all__ = [
     'MCPConfig',
     'LLMConfig',
     'NoteConfig',
+    'ExtensionConfig',
     'SandboxConfig',
     'SecurityConfig',
     'ModelRoutingConfig',
