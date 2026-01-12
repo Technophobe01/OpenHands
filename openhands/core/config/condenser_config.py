@@ -185,6 +185,47 @@ class ConversationWindowCondenserConfig(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
 
+class HierarchicalCondenserConfig(BaseModel):
+    """Configuration for HierarchicalCondenser.
+
+    CCA F1: Hierarchical condenser with scope-based compression.
+    Organizes events into SESSION/ENTRY/RUNNABLE scopes and uses
+    the Architect to compress lower scopes first.
+
+    Reference: arXiv:2512.10398 (Confucius Code Agent)
+    """
+
+    type: Literal['hierarchical'] = Field(default='hierarchical')
+    llm_config: LLMConfig = Field(
+        ..., description='Configuration for the LLM to use for hierarchical summarization.'
+    )
+
+    keep_first: int = Field(
+        default=1,
+        description='Number of initial events to always keep in history.',
+        ge=0,
+    )
+    max_size: int = Field(
+        default=100,
+        description='Maximum number of events before triggering hierarchical condensation.',
+        ge=2,
+    )
+    compression_threshold: float = Field(
+        default=0.8,
+        description='Trigger compression at this percentage of max capacity (0.0-1.0).',
+        ge=0.0,
+        le=1.0,
+    )
+    target_reduction_ratio: float = Field(
+        default=0.5,
+        description='Target ratio of tokens to keep after compression (0.0-1.0).',
+        ge=0.1,
+        le=0.9,
+    )
+
+    model_config = ConfigDict(extra='forbid')
+
+
 # Type alias for convenience
 CondenserConfig = (
     NoOpCondenserConfig
@@ -197,6 +238,7 @@ CondenserConfig = (
     | StructuredSummaryCondenserConfig
     | CondenserPipelineConfig
     | ConversationWindowCondenserConfig
+    | HierarchicalCondenserConfig
 )
 
 
@@ -235,7 +277,7 @@ def condenser_config_from_toml_section(
 
         # Handle LLM config reference if needed
         if (
-            condenser_type in ('llm', 'llm_attention')
+            condenser_type in ('llm', 'llm_attention', 'structured', 'hierarchical')
             and 'llm_config' in data
             and isinstance(data['llm_config'], str)
         ):
@@ -300,6 +342,7 @@ def create_condenser_config(condenser_type: str, data: dict) -> CondenserConfig:
         'pipeline': CondenserPipelineConfig,
         'conversation_window': ConversationWindowCondenserConfig,
         'browser_output_masking': BrowserOutputCondenserConfig,
+        'hierarchical': HierarchicalCondenserConfig,
     }
 
     if condenser_type not in condenser_classes:
