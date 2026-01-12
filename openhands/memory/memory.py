@@ -12,10 +12,12 @@ from openhands.events.action.agent import RecallAction
 from openhands.events.event import Event, EventSource, RecallType
 from openhands.events.observation.agent import (
     MicroagentKnowledge,
+    NoteKnowledge,
     RecallObservation,
 )
 from openhands.events.observation.empty import NullObservation
 from openhands.events.stream import EventStream, EventStreamSubscriber
+from openhands.memory.notes import NoteTaker, NoteStore
 from openhands.microagent import (
     BaseMicroagent,
     KnowledgeMicroagent,
@@ -41,6 +43,8 @@ USER_MICROAGENTS_DIR = Path.home() / '.openhands' / 'microagents'
 class Memory:
     """Memory is a component that listens to the EventStream for information retrieval actions
     (a RecallAction) and publishes observations with the content (such as RecallObservation).
+
+    CCA F2: Also integrates note-taking for cross-session learning.
     """
 
     sid: str
@@ -49,17 +53,20 @@ class Memory:
     loop: asyncio.AbstractEventLoop | None
     repo_microagents: dict[str, RepoMicroagent]
     knowledge_microagents: dict[str, KnowledgeMicroagent]
+    note_taker: NoteTaker
 
     def __init__(
         self,
         event_stream: EventStream,
         sid: str,
         status_callback: Callable | None = None,
+        enable_notes: bool = True,
     ):
         self.event_stream = event_stream
         self.sid = sid if sid else str(uuid.uuid4())
         self.status_callback = status_callback
         self.loop = None
+        self.enable_notes = enable_notes
 
         self.event_stream.subscribe(
             EventStreamSubscriber.MEMORY,
@@ -70,6 +77,15 @@ class Memory:
         # Additional placeholders to store user workspace microagents
         self.repo_microagents = {}
         self.knowledge_microagents = {}
+
+        # CCA F2: Initialize note-taker for cross-session learning
+        if enable_notes:
+            self.note_taker = NoteTaker(
+                note_store=NoteStore(),
+                session_id=self.sid,
+            )
+        else:
+            self.note_taker = None  # type: ignore
 
         # Store repository / runtime info to send them to the templating later
         self.repository_info: RepositoryInfo | None = None
@@ -143,12 +159,15 @@ class Memory:
 
         This method collects information from all available repo microagents and concatenates their contents.
         Multiple repo microagents are supported, and their contents will be concatenated with newlines between them.
+
+        CCA F2: Also includes relevant notes from cross-session learning.
         """
         # Create WORKSPACE_CONTEXT info:
         # - repository_info
         # - runtime_info
         # - repository_instructions
         # - microagent_knowledge
+        # - note_knowledge (CCA F2)
 
         # Collect raw repository instructions
         repo_instructions = ''
@@ -162,12 +181,16 @@ class Memory:
         # Find any matched microagents based on the query
         microagent_knowledge = self._find_microagent_knowledge(event.query)
 
+        # CCA F2: Find any relevant notes based on the query
+        note_knowledge = self._find_note_knowledge(event.query)
+
         # Create observation if we have anything
         if (
             self.repository_info
             or self.runtime_info
             or repo_instructions
             or microagent_knowledge
+            or note_knowledge
             or self.conversation_instructions
         ):
             obs = RecallObservation(
@@ -204,6 +227,7 @@ class Memory:
                     else ''
                 ),
                 microagent_knowledge=microagent_knowledge,
+                note_knowledge=note_knowledge,
                 content='Added workspace context',
                 date=self.runtime_info.date if self.runtime_info is not None else '',
                 custom_secrets_descriptions=(
@@ -225,16 +249,23 @@ class Memory:
         self,
         event: RecallAction,
     ) -> RecallObservation | None:
-        """When a microagent action triggers microagents, create a RecallObservation with structured data."""
+        """When a microagent action triggers microagents, create a RecallObservation with structured data.
+
+        CCA F2: Also includes relevant notes from cross-session learning.
+        """
         # Find any matched microagents based on the query
         microagent_knowledge = self._find_microagent_knowledge(event.query)
 
+        # CCA F2: Find any relevant notes based on the query
+        note_knowledge = self._find_note_knowledge(event.query)
+
         # Create observation if we have anything
-        if microagent_knowledge:
+        if microagent_knowledge or note_knowledge:
             obs = RecallObservation(
                 recall_type=RecallType.KNOWLEDGE,
                 microagent_knowledge=microagent_knowledge,
-                content='Retrieved knowledge from microagents',
+                note_knowledge=note_knowledge,
+                content='Retrieved knowledge from microagents and notes',
             )
             return obs
         return None
@@ -267,6 +298,75 @@ class Memory:
                     )
                 )
         return recalled_content
+
+    def _find_note_knowledge(
+        self, query: str, related_files: list[str] | None = None, limit: int = 5
+    ) -> list[NoteKnowledge]:
+        """Find note knowledge based on a query.
+
+        CCA F2: Cross-session knowledge retrieval from notes.
+
+        Args:
+            query: The query to search for keyword matches
+            related_files: Optional list of files being worked on
+            limit: Maximum number of notes to return
+
+        Returns:
+            A list of NoteKnowledge objects for matched notes
+        """
+        if not self.enable_notes or self.note_taker is None:
+            return []
+
+        recalled_notes: list[NoteKnowledge] = []
+
+        # Skip empty queries
+        if not query:
+            return recalled_notes
+
+        try:
+            # Get notes matching the query context
+            notes_with_matches = self.note_taker.note_store.search_by_keywords(
+                query, limit=limit
+            )
+
+            for note, matched_keywords in notes_with_matches:
+                logger.info(
+                    "Note '%s' recalled by keywords %s", note.title, matched_keywords
+                )
+                recalled_notes.append(
+                    NoteKnowledge(
+                        note_id=note.note_id,
+                        title=note.title,
+                        note_type=note.note_type.value,
+                        matched_keywords=matched_keywords,
+                        content=note.solution or note.content,
+                    )
+                )
+
+            # Also get notes related to files being worked on
+            if related_files:
+                file_notes = self.note_taker.note_store.get_related_notes(
+                    related_files, limit=limit
+                )
+                existing_ids = {n.note_id for n in recalled_notes}
+                for note in file_notes:
+                    if note.note_id not in existing_ids:
+                        logger.info(
+                            "Note '%s' recalled by related files", note.title
+                        )
+                        recalled_notes.append(
+                            NoteKnowledge(
+                                note_id=note.note_id,
+                                title=note.title,
+                                note_type=note.note_type.value,
+                                matched_keywords=[],
+                                content=note.solution or note.content,
+                            )
+                        )
+        except Exception as e:
+            logger.warning(f'Error finding note knowledge: {e}')
+
+        return recalled_notes[:limit]
 
     def load_user_workspace_microagents(
         self, user_microagents: list[BaseMicroagent]

@@ -60,6 +60,27 @@ class MicroagentKnowledge:
 
 
 @dataclass
+class NoteKnowledge:
+    """Represents knowledge from a recalled note.
+
+    CCA F2: Notes provide cross-session learning from previous solutions.
+
+    Attributes:
+        note_id: The unique ID of the note
+        title: The note's title
+        note_type: Type of note (solution, failure, pattern, etc.)
+        matched_keywords: Keywords that triggered the recall
+        content: The note's content/solution
+    """
+
+    note_id: str
+    title: str
+    note_type: str
+    matched_keywords: list[str]
+    content: str
+
+
+@dataclass
 class RecallObservation(Observation):
     """The retrieval of content from a microagent or more microagents."""
 
@@ -98,13 +119,35 @@ class RecallObservation(Observation):
     ]
     """
 
+    # CCA F2: Notes from cross-session learning
+    note_knowledge: list[NoteKnowledge] = field(default_factory=list)
+    """
+    A list of NoteKnowledge objects containing recalled notes from previous sessions.
+
+    Example:
+    [
+        NoteKnowledge(
+            note_id="solution_abc123_1234567890",
+            title="Fixed database connection timeout",
+            note_type="solution",
+            matched_keywords=["database", "timeout"],
+            content="The solution was to increase pool size..."
+        )
+    ]
+    """
+
     @property
     def message(self) -> str:
-        return (
-            'Added workspace context'
-            if self.recall_type == RecallType.WORKSPACE_CONTEXT
-            else 'Added microagent knowledge'
-        )
+        if self.recall_type == RecallType.WORKSPACE_CONTEXT:
+            return 'Added workspace context'
+        parts = []
+        if self.microagent_knowledge:
+            parts.append('microagent knowledge')
+        if self.note_knowledge:
+            parts.append('note knowledge')
+        if parts:
+            return f'Added {" and ".join(parts)}'
+        return 'Retrieved knowledge'
 
     def __str__(self) -> str:
         # Build a string representation
@@ -132,6 +175,12 @@ class RecallObservation(Observation):
             fields.extend(
                 [
                     f'microagent_knowledge={", ".join([m.name for m in self.microagent_knowledge])}',
+                ]
+            )
+        if self.note_knowledge:
+            fields.extend(
+                [
+                    f'note_knowledge={", ".join([n.title for n in self.note_knowledge])}',
                 ]
             )
 
